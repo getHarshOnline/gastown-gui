@@ -1,6 +1,8 @@
+> **[getHarshOnline/gastown-gui](https://github.com/getHarshOnline/gastown-gui)** — fork of [web3dev1337/gastown-gui](https://github.com/web3dev1337/gastown-gui) maintained on the **`gho`** branch. Web dashboard for [getHarshOnline/gastown](https://github.com/getHarshOnline/gastown) with real-time agent monitoring, service control, and work visualization.
+
 # Gas Town GUI
 
-A standalone web GUI for [Gas Town](https://github.com/steveyegge/gastown) - the multi-agent orchestration system for Claude Code.
+A standalone web GUI for [Gas Town](https://github.com/getHarshOnline/gastown) - the multi-agent orchestration system for Claude Code.
 
 ![Gas Town GUI Screenshot](assets/screenshot.png)
 
