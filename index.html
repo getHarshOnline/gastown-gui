@@ -61,49 +61,61 @@
         <div class="nav-tabs">
           <button class="nav-tab active" data-view="dashboard" data-tooltip="System overview - health, metrics, and quick actions.">
             <span class="material-icons">dashboard</span>
-            Overview
+            <span class="nav-label">Overview</span>
           </button>
           <button class="nav-tab" data-view="convoys" data-tooltip="Groups of related work items. Track progress across multiple tasks.">
             <span class="material-icons">local_shipping</span>
-            Convoys
+            <span class="nav-label">Convoys</span>
           </button>
           <button class="nav-tab" data-view="work" data-tooltip="Individual tasks (beads) and their completion status.">
             <span class="material-icons">task_alt</span>
-            Work
+            <span class="nav-label">Work</span>
           </button>
           <button class="nav-tab" data-view="agents" data-tooltip="Worker agents: Mayor, Witness, Refinery, and Polecats.">
             <span class="material-icons">groups</span>
-            Agents
+            <span class="nav-label">Agents</span>
           </button>
-          <button class="nav-tab" data-view="rigs" data-tooltip="Git projects with their agents and GitHub integration.">
+          <button class="nav-tab" data-view="rigs" data-tooltip="Connected repositories and local workspaces with their agents.">
             <span class="material-icons">folder_special</span>
-            Rigs
+            <span class="nav-label">Rigs</span>
           </button>
-          <button class="nav-tab" data-view="crews" data-tooltip="Teams of polecats for coordinated work.">
-            <span class="material-icons">groups</span>
-            Crews
-          </button>
-          <button class="nav-tab" data-view="prs" data-tooltip="GitHub Pull Requests across all connected repositories.">
-            <span class="material-icons">merge_type</span>
-            PRs
-          </button>
-          <button class="nav-tab" data-view="formulas" data-tooltip="Workflow templates for repeatable tasks.">
-            <span class="material-icons">science</span>
-            Formulas
-          </button>
-          <button class="nav-tab" data-view="issues" data-tooltip="GitHub Issues across connected repositories.">
-            <span class="material-icons">bug_report</span>
-            Issues
-          </button>
-          <button class="nav-tab" data-view="mail" data-tooltip="Messages between agents and the human overseer.">
-            <span class="material-icons">mail</span>
-            Mail
-            <span class="badge hidden" id="mail-badge">0</span>
-          </button>
-          <button class="nav-tab" data-view="health" data-tooltip="System health check - verify Gas Town configuration.">
-            <span class="material-icons">health_and_safety</span>
-            Health
-          </button>
+          <div class="nav-dropdown">
+            <button class="nav-tab nav-dropdown-toggle" data-tooltip="More options">
+              <span class="material-icons">more_horiz</span>
+              <span class="nav-label">More</span>
+              <span class="badge hidden" id="more-badge">0</span>
+              <span class="material-icons nav-dropdown-arrow">expand_more</span>
+            </button>
+            <div class="nav-dropdown-menu">
+              <button class="nav-dropdown-item" data-view="crews" data-tooltip="Teams of polecats for coordinated work.">
+                <span class="material-icons">groups</span>
+                Crews
+              </button>
+              <button class="nav-dropdown-item" data-view="formulas" data-tooltip="Workflow templates for repeatable tasks.">
+                <span class="material-icons">science</span>
+                Formulas
+              </button>
+              <div class="nav-dropdown-divider"></div>
+              <button class="nav-dropdown-item" data-view="prs" data-tooltip="Pull requests when a review backend is configured.">
+                <span class="material-icons">merge_type</span>
+                Pull Requests
+              </button>
+              <button class="nav-dropdown-item" data-view="issues" data-tooltip="Issues when an external tracker is configured.">
+                <span class="material-icons">bug_report</span>
+                Issues
+              </button>
+              <div class="nav-dropdown-divider"></div>
+              <button class="nav-dropdown-item" data-view="mail" data-tooltip="Messages between agents and the human overseer.">
+                <span class="material-icons">mail</span>
+                Mail
+                <span class="badge hidden" id="mail-badge">0</span>
+              </button>
+              <button class="nav-dropdown-item" data-view="health" data-tooltip="System health check - verify Gas Town configuration.">
+                <span class="material-icons">health_and_safety</span>
+                Health
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       <div class="header-right">
@@ -193,13 +205,13 @@
           <div class="view-header">
             <h1 id="work-view-title">All Work</h1>
             <div class="view-filters">
-              <button class="btn btn-sm btn-ghost" id="work-filter-all" title="All beads">
+              <button class="btn btn-sm btn-secondary filter-active" id="work-filter-all" title="All beads">
                 <span class="material-icons">list</span> All
               </button>
               <button class="btn btn-sm btn-ghost" id="work-filter-open" title="Open tasks">
                 <span class="material-icons">pending</span> Open
               </button>
-              <button class="btn btn-sm btn-secondary filter-active" id="work-filter-closed" title="Completed tasks">
+              <button class="btn btn-sm btn-ghost" id="work-filter-closed" title="Completed tasks">
                 <span class="material-icons">check_circle</span> Completed
               </button>
             </div>
@@ -308,10 +320,10 @@
           </div>
         </div>
 
-        <!-- GitHub Issues View -->
+        <!-- Issues View -->
         <div class="view" id="view-issues">
           <div class="view-header">
-            <h1>GitHub Issues</h1>
+            <h1>Issues</h1>
             <div class="view-actions">
               <div class="filter-group">
                 <button class="issue-state-tab active" data-state="open">Open</button>
@@ -331,14 +343,14 @@
         <!-- Mail View -->
         <div class="view" id="view-mail">
           <div class="view-header">
-            <h1 id="mail-view-title">My Inbox</h1>
+            <h1 id="mail-view-title">All Mail</h1>
             <div class="view-actions">
               <div class="filter-group">
-                <button class="btn btn-secondary filter-active" id="mail-filter-mine">
+                <button class="btn btn-ghost" id="mail-filter-mine">
                   <span class="material-icons">inbox</span>
                   My Inbox
                 </button>
-                <button class="btn btn-ghost" id="mail-filter-all">
+                <button class="btn btn-secondary filter-active" id="mail-filter-all">
                   <span class="material-icons">forum</span>
                   All Mail
                 </button>

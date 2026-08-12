@@ -11,9 +11,9 @@ FRONTEND: js/ - Browser SPA (vanilla JS, no framework)
 BACKEND:  server/ - Refactored backend modules (services, gateways, routes)
 STYLES:   css/ - CSS custom properties + component styles
 TESTS:    test/ - Vitest unit + integration, Puppeteer E2E
-CONFIG:   vitest.config.js, vitest.unit.config.js, package.json
+CONFIG:   vitest.config.js, vitest.unit.config.js, package.json, flake.nix
 ASSETS:   assets/ - Favicons + screenshots
-DOCS:     refactoring-analysis/ - Refactor plans/reports, CLI-COMPATIBILITY.md
+DOCS:     docs/, refactoring-analysis/, CLI-COMPATIBILITY.md
 ```
 
 ## Backend — Entry & App
@@ -31,6 +31,9 @@ server/app/createApp.js - Express app factory with CORS config
 ## Backend — Domain Values
 
 ```
+server/domain/session/SessionNames.js - Upstream-compatible tmux session naming + rigs.json prefix registry
+server/domain/agents/normalizeRigAgents.js - Normalizes rig worker payloads across `rig.agents` and legacy `rig.hooks`
+
 server/domain/values/AgentPath.js - Validates rig/agent path pairs
 └─ Enforces SafeSegment on both segments
 
@@ -63,6 +66,7 @@ server/infrastructure/CommandRunner.js - Safe child_process.execFile wrapper
 
 server/infrastructure/CacheRegistry.js - TTL cache for CLI output
 server/infrastructure/EventBus.js - Internal pub/sub for cache invalidation
+server/infrastructure/ExecutableResolver.js - Resolves gt/bd binaries from PATH, env overrides, and Homebrew/Linuxbrew fallback paths
 ```
 
 ## Backend — Services
@@ -75,6 +79,7 @@ server/services/BeadService.js - Bead CRUD via BDGateway
 server/services/WorkService.js - Work lifecycle (close, defer, reassign)
 server/services/GitHubService.js - PR/issue/repo queries via GitHubGateway
 server/services/TargetService.js - Available sling targets
+server/services/CLICompatibilityService.js - Old/new gt & bd command fallback orchestration for server endpoints
 ```
 
 ## Backend — Routes
@@ -157,15 +162,22 @@ test/mock-server.js - Mock Express server mimicking gt CLI responses
 test/e2e.test.js - Puppeteer browser tests (real server + browser)
 test/integration.test.js - Legacy integration tests
 test/integration/endpoints.test.js - API endpoint contract tests
+test/integration/cli-compatibility.test.js - Real server + stubbed CLI coverage for gt/bd old/new command fallback behavior
+test/integration/cli-executable-resolution.test.js - Real server coverage for gt/bd executable path resolution and missing-gt activity-stream crash prevention
+test/integration/rig-parsing-fallback.test.js - Real server + stubbed CLI coverage for rig list fallback/emoji parsing
 test/integration/websocket.test.js - WebSocket lifecycle tests
 test/integration/cache.test.js - Cache invalidation tests
+test/integration/realtime-cache-invalidation.test.js - Real server cache invalidation coverage for rig/service mutation freshness
 
-test/unit/ - 31 unit test files covering:
+test/unit/ - 33 unit test files covering:
 ├─ Domain values: safeSegment, agentPath
+├─ Rig agent normalization: normalizeRigAgents
+├─ Session naming: sessionNames
 ├─ Gateways: gtGateway, bdGateway, githubGateway, gitGateway, tmuxGateway
 ├─ Infrastructure: cacheRegistry, commandRunner, eventBus
 ├─ Services: statusService, targetService, githubService, convoyService,
 │            formulaService, beadService, workService
+├─ CLI resolution: executableResolver
 ├─ Routes: statusRoutes, targetRoutes, githubRoutes, convoyRoutes,
 │          formulaRoutes, beadRoutes, workRoutes
 ├─ Frontend: state, htmlUtils, quoteArg, formattingTime, animationsShared,
@@ -183,11 +195,14 @@ vitest.config.js - Main test config (all tests)
 vitest.unit.config.js - Unit-only test config
 bin/cli.js - CLI entry point (gastown-gui command)
 scripts/extract_user_prompts.mjs - Sanitized prompt log builder
+flake.nix - Flake outputs for package/app + NixOS module export
+nix/deployment.nix - NixOS module defining services.gastown-gui
 ```
 
 ## Documentation
 
 ```
+docs/ - Project-specific audits and review writeups
 CLI-COMPATIBILITY.md - gt/bd CLI command compatibility audit
 refactoring-analysis/ - Refactor plans, reports, and analysis docs
 refactoring-analysis/trace/ - Sanitized prompt/trace exports

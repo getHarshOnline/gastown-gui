@@ -1,46 +1,17 @@
 import path from 'node:path';
 import fsPromises from 'node:fs/promises';
-
-function parseTmuxPolecatSessions(output, rigNames = []) {
-  const sessions = new Set();
-  const rigsByLongest = [...new Set(rigNames)].filter(Boolean).sort((a, b) => b.length - a.length);
-
-  for (const line of String(output || '').split('\n')) {
-    const match = line.match(/^(gt-[^:]+):/);
-    if (!match) continue;
-
-    const session = match[1].replace('gt-', '');
-
-    // Prefer matching known rig names to disambiguate hyphens inside agent names.
-    let matched = false;
-    for (const rig of rigsByLongest) {
-      const prefix = `${rig}-`;
-      if (!session.startsWith(prefix)) continue;
-      const name = session.slice(prefix.length);
-      if (!name) continue;
-      sessions.add(`${rig}/${name}`);
-      matched = true;
-      break;
-    }
-
-    if (matched) continue;
-
-    // Fallback heuristic: treat last dash-separated segment as agent name.
-    const parts = session.split('-');
-    if (parts.length < 2) continue;
-    const name = parts.pop();
-    const rig = parts.join('-');
-    sessions.add(`${rig}/${name}`);
-  }
-
-  return sessions;
-}
+import {
+  buildSessionRegistryFromTown,
+  parseTmuxSessions,
+} from '../domain/session/SessionNames.js';
 
 async function readRigConfig({ gtRoot, rigName }) {
   const rigConfigPath = path.join(gtRoot, rigName, 'config.json');
   const content = await fsPromises.readFile(rigConfigPath, 'utf8');
   return JSON.parse(content);
 }
+
+import { normalizeRigAgents } from '../domain/agents/normalizeRigAgents.js';
 
 export class StatusService {
   constructor({
@@ -94,7 +65,19 @@ export class StatusService {
     if (!data) return { raw: statusResult.raw };
 
     const rigs = Array.isArray(data.rigs) ? data.rigs : [];
-    const runningPolecats = parseTmuxPolecatSessions(sessionsText, rigs.map(rig => rig?.name));
+    const registry = await buildSessionRegistryFromTown(this._gtRoot);
+    const identities = parseTmuxSessions(sessionsText, registry);
+    const runningAgents = new Set(
+      identities
+        .map(identity => identity.address)
+        .filter(Boolean),
+    );
+    const runningPolecats = new Set(
+      identities
+        .filter(identity => identity.role === 'polecat')
+        .map(identity => identity.address)
+        .filter(Boolean),
+    );
 
     for (const rig of rigs) {
       if (!rig?.name) continue;
@@ -106,17 +89,24 @@ export class StatusService {
 
       for (const hook of rig.hooks || []) {
         const agentPath = hook.agent;
-        hook.running = runningPolecats.has(agentPath);
+        hook.running = runningAgents.has(agentPath);
 
         // Compatibility: older systems may store polecats in a subdirectory
         const polecatPath = String(agentPath || '').replace(/\//, '/polecats/');
-        if (!hook.running && polecatPath !== agentPath && runningPolecats.has(polecatPath)) {
+        if (!hook.running && polecatPath !== agentPath && runningAgents.has(polecatPath)) {
           hook.running = true;
         }
       }
     }
 
     data.runningPolecats = Array.from(runningPolecats);
+    const allRigAgents = rigs.flatMap(rig => normalizeRigAgents(rig));
+    const activeHooks = allRigAgents.filter(agent => agent.running && (agent.has_work || agent.hook || agent.hook_bead)).length;
+    data.summary = {
+      ...(data.summary || {}),
+      active_hooks: activeHooks,
+      rig_count: data.summary?.rig_count ?? rigs.length,
+    };
     return data;
   }
 

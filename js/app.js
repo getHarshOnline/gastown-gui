@@ -44,12 +44,14 @@ const REFRESH_TOAST_DURATION_MS = 1000;
 const MAYOR_OUTPUT_POLL_INTERVAL_MS = 2000;
 const MAYOR_OUTPUT_TAIL_LINES = 80;
 const MAYOR_MESSAGE_PREVIEW_LENGTH = 40;
+const REALTIME_REFRESH_DEBOUNCE_MS = 250;
 
 // DOM Elements
 const elements = {
   townName: document.getElementById('town-name'),
   connectionStatus: document.getElementById('connection-status'),
   mailBadge: document.getElementById('mail-badge'),
+  moreBadge: document.getElementById('more-badge'),
   hookStatus: document.getElementById('hook-status'),
   statusMessage: document.getElementById('status-message'),
   agentTree: document.getElementById('agent-tree'),
@@ -63,6 +65,7 @@ const elements = {
 
 // Initialization guard to prevent double-init
 let isInitialized = false;
+let realtimeRefreshTimer = null;
 
 // Loading state helpers
 function showLoadingState(container, message = 'Loading...') {
@@ -144,31 +147,39 @@ async function init() {
 
   // Check for first-time users - show onboarding wizard
   const showOnboarding = await shouldShowOnboarding();
+  const hasExistingTownActivity = Boolean(
+    state.get('status')?.rigs?.length ||
+    state.get('convoys')?.length ||
+    state.get('work')?.length ||
+    state.get('agents')?.length
+  );
   if (showOnboarding) {
     setTimeout(() => startOnboarding(), ONBOARDING_START_DELAY_MS);
-  } else if (shouldShowTutorial()) {
+  } else if (!hasExistingTownActivity && shouldShowTutorial()) {
     // Show tutorial only if onboarding was already completed
     setTimeout(() => startTutorial(), TUTORIAL_START_DELAY_MS);
+  } else if (hasExistingTownActivity) {
+    localStorage.setItem('gastown-tutorial-complete', 'true');
   }
 
   // Listen for onboarding completion
   document.addEventListener(ONBOARDING_COMPLETE, () => {
-    loadInitialData();
+    loadInitialData({ forceRefresh: true });
   });
 
   // Listen for status refresh (from service controls)
   document.addEventListener(STATUS_REFRESH, () => {
-    loadInitialData();
+    loadInitialData({ forceRefresh: true });
   });
 
   // Listen for dashboard refresh
   document.addEventListener(DASHBOARD_REFRESH, () => {
-    loadDashboard();
+    loadDashboard({ forceRefresh: true });
   });
 
   // Listen for rigs refresh (from agent controls)
   document.addEventListener(RIGS_REFRESH, () => {
-    loadRigs();
+    loadRigs({ forceRefresh: true });
   });
 
   // Listen for work refresh (from work actions)
@@ -178,7 +189,7 @@ async function init() {
 
   // Listen for mail refresh (from read/unread actions)
   document.addEventListener(MAIL_REFRESH, () => {
-    loadMail();
+    loadMail({ forceRefresh: true });
   });
 
   // Handle mail detail modal
@@ -214,28 +225,66 @@ async function init() {
 
 }
 
-// Navigation setup
 function setupNavigation() {
   navTabs.forEach(tab => {
     tab.addEventListener('click', () => {
       const viewId = tab.dataset.view;
-      switchView(viewId);
+      if (viewId) {
+        switchView(viewId);
+      }
+    });
+  });
+
+  document.querySelectorAll('.nav-dropdown-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const viewId = item.dataset.view;
+      if (viewId) {
+        switchView(viewId);
+        document.querySelectorAll('.nav-dropdown').forEach(d => d.classList.remove('open'));
+      }
+    });
+  });
+
+  document.querySelectorAll('.nav-dropdown-toggle').forEach(toggle => {
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dropdown = toggle.closest('.nav-dropdown');
+      if (dropdown) {
+        dropdown.classList.toggle('open');
+      }
+    });
+  });
+
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.nav-dropdown').forEach(d => {
+      d.classList.remove('open');
     });
   });
 }
 
 function switchView(viewId) {
-  // Update tabs
+  state.setCurrentView(viewId);
+
   navTabs.forEach(tab => {
     tab.classList.toggle('active', tab.dataset.view === viewId);
   });
 
-  // Update views
+  let hasActiveDropdownView = false;
+  document.querySelectorAll('.nav-dropdown-item').forEach(item => {
+    const isActive = item.dataset.view === viewId;
+    item.classList.toggle('active', isActive);
+    if (isActive) hasActiveDropdownView = true;
+  });
+
+  document.querySelectorAll('.nav-dropdown-toggle').forEach(toggle => {
+    toggle.classList.toggle('active', hasActiveDropdownView);
+  });
+
   views.forEach(view => {
     view.classList.toggle('active', view.id === `view-${viewId}`);
   });
 
-  // Load view-specific data
   if (viewId === 'dashboard') {
     loadDashboard();
   } else if (viewId === 'mail') {
@@ -257,6 +306,53 @@ function switchView(viewId) {
   } else if (viewId === 'health') {
     loadHealthCheck();
   }
+}
+
+async function refreshActiveView({ forceRefresh = false } = {}) {
+  const currentView = state.getCurrentView();
+
+  if (currentView === 'dashboard') {
+    await loadDashboard({ forceRefresh });
+    return;
+  }
+  if (currentView === 'convoys') {
+    await loadConvoys({ forceRefresh });
+    return;
+  }
+  if (currentView === 'agents') {
+    await loadAgents({ forceRefresh });
+    return;
+  }
+  if (currentView === 'rigs') {
+    await loadRigs({ forceRefresh });
+    return;
+  }
+  if (currentView === 'mail') {
+    await loadMail({ forceRefresh });
+    return;
+  }
+  if (currentView === 'work') {
+    await loadWork();
+  }
+}
+
+function scheduleRealtimeRefresh(reason, { forceRefresh = true } = {}) {
+  if (realtimeRefreshTimer) return;
+
+  realtimeRefreshTimer = setTimeout(async () => {
+    realtimeRefreshTimer = null;
+
+    const results = await Promise.allSettled([
+      api.getStatus(forceRefresh).then(status => state.setStatus(status)),
+      refreshActiveView({ forceRefresh }),
+    ]);
+
+    results.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.error(`[App] Realtime refresh failed (${reason}):`, result.reason);
+      }
+    });
+  }, REALTIME_REFRESH_DEBOUNCE_MS);
 }
 
 // WebSocket connection
@@ -304,29 +400,30 @@ function handleWebSocketMessage(message) {
 
     case 'convoy_created':
     case 'convoy_updated':
-      state.updateConvoy(message.data);
+      if (message.data?.id) {
+        state.updateConvoy(message.data);
+      }
+      scheduleRealtimeRefresh(message.type);
       break;
 
     case 'work_slung':
       showToast(`Work slung: ${message.data?.bead || 'unknown'}`, 'success');
-      loadConvoys();
+      scheduleRealtimeRefresh(message.type);
       break;
 
     case 'bead_created':
-      // Bead was created - refresh work list if visible
-      if (state.currentView === 'work') {
-        loadWork();
-      }
       showToast('Work item created', 'success');
+      scheduleRealtimeRefresh(message.type);
       break;
 
     case 'rig_added':
-      // Rig was added - refresh rigs list and status
       showToast(`Rig added: ${message.data?.name || 'unknown'}`, 'success');
-      api.getStatus(true); // Force refresh
-      if (state.currentView === 'rigs') {
-        loadRigs();
-      }
+      scheduleRealtimeRefresh(message.type);
+      break;
+
+    case 'rig_removed':
+      showToast(`Rig removed: ${message.data?.name || 'unknown'}`, 'info');
+      scheduleRealtimeRefresh(message.type);
       break;
 
     case 'mayor_message':
@@ -343,7 +440,6 @@ function handleWebSocketMessage(message) {
       break;
 
     case 'service_started':
-      // Service started (possibly Mayor auto-started)
       if (message.data?.autoStarted) {
         showToast(`${message.data.service} auto-started`, 'success');
         state.addEvent({
@@ -354,8 +450,22 @@ function handleWebSocketMessage(message) {
           service: message.data.service
         });
       }
-      // Refresh status and update state to re-render sidebar
-      api.getStatus().then(status => state.setStatus(status)).catch(console.error);
+      scheduleRealtimeRefresh(message.type);
+      break;
+
+    case 'service_stopped':
+    case 'service_restarted':
+    case 'agent_started':
+    case 'agent_stopped':
+    case 'agent_restarted':
+    case 'crew_added':
+    case 'crew_removed':
+    case 'work_done':
+    case 'work_parked':
+    case 'work_released':
+    case 'work_reassigned':
+    case 'escalation':
+      scheduleRealtimeRefresh(message.type);
       break;
 
     default:
@@ -378,20 +488,20 @@ function updateConnectionStatus(status) {
 }
 
 // Data loading
-async function loadInitialData() {
+async function loadInitialData({ forceRefresh = false } = {}) {
   elements.statusMessage.textContent = 'Loading...';
 
   try {
     // Load all critical data in parallel using Promise.allSettled
     // This way a slow/failing request doesn't block others
     const results = await Promise.allSettled([
-      api.getStatus().then(status => {
+      api.getStatus(forceRefresh).then(status => {
         state.setStatus(status);
         return status;
       }),
-      loadConvoys(),
+      loadConvoys({ forceRefresh }),
       loadMayorMessageHistory(),
-      loadDashboard(),
+      loadDashboard({ forceRefresh }),
     ]);
 
     // Check results and log any failures
@@ -446,10 +556,13 @@ async function preloadBackgroundData() {
 // Track convoy filter state
 let showAllConvoys = false;
 
-async function loadConvoys() {
+async function loadConvoys({ forceRefresh = false } = {}) {
   showLoadingState(elements.convoyList, 'Loading convoys...');
   try {
     const params = showAllConvoys ? { all: 'true' } : {};
+    if (forceRefresh) {
+      params.refresh = 'true';
+    }
     const convoys = await api.getConvoys(params);
     state.setConvoys(convoys);
   } catch (err) {
@@ -517,19 +630,18 @@ function setupConvoyFilters() {
 }
 
 // Track mail filter state
-let mailFilter = 'mine'; // 'mine' = my inbox, 'all' = all system mail
+let mailFilter = 'all'; // 'mine' = my inbox, 'all' = all system mail
 
-async function loadMail() {
+async function loadMail({ forceRefresh = false } = {}) {
   showLoadingState(elements.mailList, 'Loading mail...');
   try {
     let mail;
     if (mailFilter === 'all') {
-      // Get all mail from feed (paginated response)
-      const response = await api.get('/api/mail/all');
+      const query = forceRefresh ? '?refresh=true' : '';
+      const response = await api.get(`/api/mail/all${query}`);
       mail = response.items || response; // Handle both paginated and legacy responses
     } else {
-      // Get my inbox only
-      mail = await api.getMail();
+      mail = await api.getMail(forceRefresh);
     }
     state.setMail(mail || []);
   } catch (err) {
@@ -572,7 +684,7 @@ function setupMailFilters() {
   }
 }
 
-async function loadAgents() {
+async function loadAgents({ forceRefresh = false } = {}) {
   // Show loading state only if we don't have cached data
   const hasCache = state.getAgents().length > 0;
   if (!hasCache) {
@@ -580,16 +692,20 @@ async function loadAgents() {
   }
 
   try {
-    const response = await api.getAgents();
-    // Combine agents and polecats into a flat list
-    const allAgents = [
-      ...(response.agents || []),
-      ...(response.polecats || []).map(p => ({
-        ...p,
-        id: p.name,
-        status: p.running ? 'working' : 'idle',
-      })),
-    ];
+    const response = await api.getAgents(forceRefresh);
+    const townAgents = (response.agents || []).map(agent => ({
+      ...agent,
+      id: agent.id || agent.address || agent.name,
+      status: agent.state || (agent.running ? (agent.has_work ? 'working' : 'running') : 'idle'),
+      current_task: agent.work_title || agent.current_task || null,
+    }));
+    const rigAgents = (response.rigAgents || []).map(agent => ({
+      ...agent,
+      id: agent.id || agent.address || `${agent.rig}/${agent.name}`,
+      status: agent.state || (agent.running ? (agent.has_work || agent.hook_bead ? 'working' : 'running') : 'idle'),
+      current_task: agent.work_title || agent.current_task || agent.hook_bead || null,
+    }));
+    const allAgents = [...townAgents, ...rigAgents];
     state.setAgents(allAgents);
   } catch (err) {
     console.error('[App] Failed to load agents:', err);
@@ -605,7 +721,7 @@ async function loadAgents() {
   }
 }
 
-async function loadRigs() {
+async function loadRigs({ forceRefresh = false } = {}) {
   // Show loading state only if we don't have cached data
   const hasCache = state.getRigs().length > 0;
   if (!hasCache) {
@@ -617,7 +733,7 @@ async function loadRigs() {
 
   try {
     // Get rigs from status (has more details than /api/rigs)
-    const status = await api.getStatus();
+    const status = await api.getStatus(forceRefresh);
     const rigs = status.rigs || [];
     state.setStatus(status); // Update state
     renderRigList(elements.rigList, rigs);
@@ -636,14 +752,14 @@ async function loadRigs() {
 }
 
 // Track work filter state
-let workFilter = 'closed'; // Default to showing completed work
+let workFilter = 'all';
 
 async function loadWork() {
   showLoadingState(elements.workList, 'Loading work...');
   try {
-    const params = workFilter === 'all' ? {} : { status: workFilter };
-    const beads = await api.get(`/api/beads${workFilter !== 'all' ? `?status=${workFilter}` : ''}`);
-    renderWorkList(elements.workList, beads || []);
+    const query = workFilter !== 'all' ? `?status=${encodeURIComponent(workFilter)}` : '';
+    const beads = await api.get(`/api/beads${query}`);
+    state.setWork(beads || []);
   } catch (err) {
     console.error('[App] Failed to load work:', err);
     elements.workList.innerHTML = `
@@ -717,6 +833,10 @@ function subscribeToState() {
     renderConvoyList(elements.convoyList, convoys);
   });
 
+  subscribe('work', (work) => {
+    renderWorkList(elements.workList, work);
+  });
+
   // Agent updates
   subscribe('agents', (agents) => {
     renderAgentGrid(elements.agentGrid, agents);
@@ -733,8 +853,15 @@ function subscribeToState() {
 
     // Update badge
     const unread = mail.filter(m => !m.read).length;
-    elements.mailBadge.textContent = unread;
-    elements.mailBadge.classList.toggle('hidden', unread === 0);
+    const badgeCount = mailFilter === 'all' ? mail.length : unread;
+    if (elements.mailBadge) {
+      elements.mailBadge.textContent = badgeCount;
+      elements.mailBadge.classList.toggle('hidden', badgeCount === 0);
+    }
+    if (elements.moreBadge) {
+      elements.moreBadge.textContent = badgeCount;
+      elements.moreBadge.classList.toggle('hidden', badgeCount === 0);
+    }
   });
 }
 
@@ -812,7 +939,7 @@ function setupKeyboardShortcuts() {
           break;
         case 'r':
           e.preventDefault();
-          loadInitialData();
+          loadInitialData({ forceRefresh: true });
           showToast('Refreshing...', 'info', REFRESH_TOAST_DURATION_MS);
           break;
         case 's':
@@ -963,7 +1090,7 @@ function setupThemeToggle() {
 
 // Refresh button
 document.getElementById('refresh-btn').addEventListener('click', () => {
-  loadInitialData();
+  loadInitialData({ forceRefresh: true });
   showToast('Refreshing...', 'info', REFRESH_TOAST_DURATION_MS);
 });
 

@@ -20,9 +20,24 @@ import readline from 'readline';
 import { fileURLToPath } from 'url';
 
 import { createApp } from './server/app/createApp.js';
+import { normalizeRigAgents } from './server/domain/agents/normalizeRigAgents.js';
+import {
+  buildSessionRegistryFromTown,
+  clearSessionRegistryCache,
+  mayorSessionName,
+  parseTmuxSessions,
+  runningAddressesFromTmux,
+  sessionNameForAgentAddress,
+  sessionNameForService,
+} from './server/domain/session/SessionNames.js';
 import { AgentPath } from './server/domain/values/AgentPath.js';
 import { CommandRunner } from './server/infrastructure/CommandRunner.js';
 import { CacheRegistry } from './server/infrastructure/CacheRegistry.js';
+import {
+  DEFAULT_BD_FALLBACK_PATHS,
+  DEFAULT_GT_FALLBACK_PATHS,
+  resolveExecutable,
+} from './server/infrastructure/ExecutableResolver.js';
 import { BDGateway } from './server/gateways/BDGateway.js';
 import { GTGateway } from './server/gateways/GTGateway.js';
 import { GitHubGateway } from './server/gateways/GitHubGateway.js';
@@ -34,6 +49,7 @@ import { GitHubService } from './server/services/GitHubService.js';
 import { StatusService } from './server/services/StatusService.js';
 import { TargetService } from './server/services/TargetService.js';
 import { WorkService } from './server/services/WorkService.js';
+import { createCLICompatibilityService } from './server/services/CLICompatibilityService.js';
 import { registerBeadRoutes } from './server/routes/beads.js';
 import { registerConvoyRoutes } from './server/routes/convoys.js';
 import { registerFormulaRoutes } from './server/routes/formulas.js';
@@ -50,27 +66,37 @@ const PORT = process.env.GASTOWN_PORT || 7667;
 const HOST = process.env.HOST || '127.0.0.1';
 const HOME = process.env.HOME || os.homedir();
 const GT_ROOT = process.env.GT_ROOT || path.join(HOME, 'gt');
+const GT_EXECUTABLE = resolveExecutable({
+  command: 'gt',
+  envVarName: 'GT_BIN',
+  fallbackPaths: DEFAULT_GT_FALLBACK_PATHS,
+});
+const BD_EXECUTABLE = resolveExecutable({
+  command: 'bd',
+  envVarName: 'BD_BIN',
+  fallbackPaths: DEFAULT_BD_FALLBACK_PATHS,
+});
 
 const commandRunner = new CommandRunner();
-const gtGateway = new GTGateway({ runner: commandRunner, gtRoot: GT_ROOT });
-const bdGateway = new BDGateway({ runner: commandRunner, gtRoot: GT_ROOT });
+const gtGateway = new GTGateway({ runner: commandRunner, gtRoot: GT_ROOT, executable: GT_EXECUTABLE });
+const bdGateway = new BDGateway({ runner: commandRunner, gtRoot: GT_ROOT, executable: BD_EXECUTABLE });
 const tmuxGateway = new TmuxGateway({ runner: commandRunner });
 const backendCache = new CacheRegistry();
 const convoyService = new ConvoyService({
   gtGateway,
   cache: backendCache,
-  emit: (type, data) => broadcast({ type, data }),
+  emit: (type, data) => emitMutationEvent(type, data),
 });
 const statusService = new StatusService({ gtGateway, tmuxGateway, cache: backendCache, gtRoot: GT_ROOT });
 const targetService = new TargetService({ statusService });
 const beadService = new BeadService({
   bdGateway,
-  emit: (type, data) => broadcast({ type, data }),
+  emit: (type, data) => emitMutationEvent(type, data),
 });
 const workService = new WorkService({
   gtGateway,
   bdGateway,
-  emit: (type, data) => broadcast({ type, data }),
+  emit: (type, data) => emitMutationEvent(type, data),
 });
 const gitHubGateway = new GitHubGateway({ runner: commandRunner });
 const gitHubService = new GitHubService({ gitHubGateway, statusService, cache: backendCache });
@@ -94,8 +120,8 @@ const CACHE_TTL = {
   status: 5000,       // 5 seconds for status (frequently changing)
   convoys: 10000,     // 10 seconds for convoys
   mail: 15000,        // 15 seconds for mail list
-  agents: 15000,      // 15 seconds for agents
-  rigs: 30000,        // 30 seconds for rigs (rarely changes)
+  agents: 5000,       // 5 seconds for agents
+  rigs: 5000,         // 5 seconds for rigs
   formulas: 60000,    // 1 minute for formulas (rarely changes)
   github_prs: 30000,  // 30 seconds for GitHub PRs
   github_issues: 30000, // 30 seconds for GitHub issues
@@ -119,6 +145,143 @@ function getCached(key) {
 
 function setCache(key, data, ttl) {
   cache.set(key, { data, expires: Date.now() + ttl });
+}
+
+const CACHE_INVALIDATION_BY_EVENT = {
+  rig_added: {
+    localKeys: ['rigs', 'agents', 'crews'],
+    localPrefixes: ['rig-config:'],
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  rig_removed: {
+    localKeys: ['rigs', 'agents', 'crews'],
+    localPrefixes: ['rig-config:'],
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  crew_added: {
+    localKeys: ['crews'],
+    backendKeys: ['status'],
+  },
+  crew_removed: {
+    localKeys: ['crews'],
+    backendKeys: ['status'],
+  },
+  agent_started: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+  },
+  agent_stopped: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+  },
+  agent_restarted: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+  },
+  service_started: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+  },
+  service_stopped: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+  },
+  service_restarted: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+  },
+  convoy_created: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  convoy_updated: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  work_slung: {
+    localKeys: ['agents'],
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  work_done: {
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  work_parked: {
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  work_released: {
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  work_reassigned: {
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  bead_created: {
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+  escalation: {
+    backendKeys: ['status'],
+    backendPrefixes: ['convoys_'],
+  },
+};
+
+function deleteLocalCacheByPrefix(prefix) {
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) {
+      cache.delete(key);
+    }
+  }
+}
+
+function invalidateCaches(plan = {}) {
+  const {
+    localKeys = [],
+    localPrefixes = [],
+    backendKeys = [],
+    backendPrefixes = [],
+  } = plan;
+
+  for (const key of localKeys) {
+    cache.delete(key);
+  }
+  for (const prefix of localPrefixes) {
+    deleteLocalCacheByPrefix(prefix);
+  }
+  for (const key of backendKeys) {
+    backendCache.delete(key);
+  }
+  for (const prefix of backendPrefixes) {
+    backendCache.deleteByPrefix(prefix);
+  }
+}
+
+function emitMutationEvent(type, data) {
+  invalidateCaches(CACHE_INVALIDATION_BY_EVENT[type]);
+  broadcast({ type, data });
+}
+
+/**
+ * Parse rig names from `gt rig list` text output.
+ * Handles both legacy "  rigname" and current "🟢 rigname" / "🛑 rigname" formats.
+ */
+function parseRigNames(text) {
+  const rigs = [];
+  for (const line of text.split('\n')) {
+    // Match "  rigname" (2-space indent) or "emoji rigname" (status indicator prefix)
+    const match = line.match(/^(?:\s{1,2}|\S+\s+)([a-zA-Z0-9_-]+)$/);
+    if (match) {
+      rigs.push({ name: match[1] });
+    }
+  }
+  return rigs;
 }
 
 // Rig config cache TTL (5 minutes - rig configs rarely change)
@@ -165,18 +328,20 @@ setInterval(() => {
 
 // Middleware
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
-app.use('/css', express.static(path.join(__dirname, 'css')));
-// Add cache-control headers for JS files to improve load times
+app.use('/css', express.static(path.join(__dirname, 'css'), {
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, must-revalidate');
+  }
+}));
 app.use('/js', express.static(path.join(__dirname, 'js'), {
-  maxAge: '1h',
   setHeaders: (res, filePath) => {
-    // Set cache-control for JS files
     if (filePath.endsWith('.js')) {
-      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('Cache-Control', 'no-store, must-revalidate');
     }
   }
 }));
 app.get('/', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, must-revalidate');
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 app.get('/favicon.ico', (req, res) => {
@@ -247,25 +412,15 @@ function addMayorMessage(target, message, status, response = null) {
   return entry;
 }
 
-// Get running tmux sessions for polecats
-async function getRunningPolecats() {
+async function getSessionRegistry() {
+  return buildSessionRegistryFromTown(GT_ROOT);
+}
+
+async function getRunningAgentAddresses() {
   try {
+    const registry = await getSessionRegistry();
     const { stdout } = await execFileAsync('tmux', ['ls']);
-    const sessions = new Set();
-    // Parse tmux ls output: "gt-rig-polecat: 1 windows (created ...)"
-    for (const line of String(stdout || '').split('\n')) {
-      const match = line.match(/^(gt-[^:]+):/);
-      if (match) {
-        // Convert "gt-hytopia-map-compression-capable" to "hytopia-map-compression/capable"
-        const parts = match[1].replace('gt-', '').split('-');
-        if (parts.length >= 2) {
-          const name = parts.pop();
-          const rig = parts.join('-');
-          sessions.add(`${rig}/${name}`);
-        }
-      }
-    }
-    return sessions;
+    return runningAddressesFromTmux(stdout, registry);
   } catch {
     return new Set();
   }
@@ -330,11 +485,11 @@ async function getPolecatOutput(sessionName, lines = 50) {
 
 // Execute a Gas Town command
 async function executeGT(args, options = {}) {
-  const cmd = `gt ${args.join(' ')}`;
+  const cmd = `${GT_EXECUTABLE} ${args.join(' ')}`;
   console.log(`[GT] Executing: ${cmd}`);
 
   try {
-    const { stdout, stderr } = await execFileAsync('gt', args, {
+    const { stdout, stderr } = await execFileAsync(GT_EXECUTABLE, args, {
       cwd: options.cwd || GT_ROOT,
       timeout: options.timeout || 30000,
       env: { ...process.env, ...options.env }
@@ -369,14 +524,14 @@ async function executeGT(args, options = {}) {
 
 // Execute a Beads command
 async function executeBD(args, options = {}) {
-  const cmd = `bd ${args.join(' ')}`;
+  const cmd = `${BD_EXECUTABLE} ${args.join(' ')}`;
   console.log(`[BD] Executing: ${cmd}`);
 
   // Set BEADS_DIR to ensure bd finds the database
   const beadsDir = path.join(GT_ROOT, '.beads');
 
   try {
-    const { stdout } = await execFileAsync('bd', args, {
+    const { stdout } = await execFileAsync(BD_EXECUTABLE, args, {
       cwd: options.cwd || GT_ROOT,
       timeout: options.timeout || 30000,
       env: { ...process.env, BEADS_DIR: beadsDir }
@@ -387,6 +542,18 @@ async function executeBD(args, options = {}) {
     return { success: false, error: error.message };
   }
 }
+
+const cliCompatibilityService = createCLICompatibilityService({
+  executeGT: (args, options) => executeGT(args, options),
+  executeBD: (args, options) => executeBD(args, options),
+  killTmuxSession: async (sessionName) => {
+    try {
+      await execFileAsync('tmux', ['kill-session', '-t', sessionName]);
+    } catch {
+      // Session may not exist; safe to ignore.
+    }
+  },
+});
 
 // Parse JSON output from commands
 function parseJSON(output) {
@@ -591,7 +758,8 @@ app.post('/api/nudge', async (req, res) => {
 
   // Default to mayor if no target specified
   const nudgeTarget = target || 'mayor';
-  const sessionName = `gt-${nudgeTarget}`;
+  const registry = await getSessionRegistry();
+  const sessionName = sessionNameForAgentAddress(nudgeTarget, registry) || `gt-${nudgeTarget}`;
 
   try {
     // Check if target session is running
@@ -622,7 +790,7 @@ app.post('/api/nudge', async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, 2000));
 
         // Broadcast that Mayor was started
-        broadcast({ type: 'service_started', data: { service: 'mayor', autoStarted: true } });
+        emitMutationEvent('service_started', { service: 'mayor', autoStarted: true });
       } else if (!isRunning) {
         const entry = addMayorMessage(nudgeTarget, message, 'failed', `Session ${sessionName} not running`);
         return res.status(400).json({
@@ -688,11 +856,8 @@ app.get('/api/bead/:beadId/links', async (req, res) => {
       return res.json(links);
     }
 
-    // Parse rig names from output (lines with exactly 2 spaces before name, no colon)
-    const rigNames = rigsResult.data
-      .split('\n')
-      .filter(line => line.match(/^  \S/) && !line.includes(':'))
-      .map(line => line.trim());
+    // Parse rig names from both legacy and emoji-prefixed formats
+    const rigNames = parseRigNames(rigsResult.data).map((rig) => rig.name);
 
     console.log(`[Links] Found rigs: ${rigNames.join(', ')}`);
 
@@ -770,38 +935,52 @@ app.get('/api/agents', async (req, res) => {
     if (cached) return res.json(cached);
   }
 
-  const [result, runningPolecats] = await Promise.all([
+  const [result, runningAddresses] = await Promise.all([
     executeGT(['status', '--json', '--fast'], { timeout: 30000 }),
-    getRunningPolecats()
+    getRunningAgentAddresses()
   ]);
 
   if (result.success) {
     const data = parseJSON(result.data);
-    const agents = data?.agents || [];
+    const agents = (data?.agents || []).map((agent) => {
+      const normalizedAddress = String(agent.address || '').replace(/\/$/, '');
+      return {
+        ...agent,
+        id: agent.address || agent.name,
+        running: runningAddresses.has(normalizedAddress) || Boolean(agent.running),
+      };
+    });
 
-    // Enhance agents with running state
-    for (const agent of agents) {
-      agent.running = runningPolecats.has(agent.address?.replace(/\/$/, ''));
-    }
-
-    // Also include running polecats from rigs
+    const rigAgents = [];
     const polecats = [];
     for (const rig of data?.rigs || []) {
-      for (const hook of rig.hooks || []) {
-        const isRunning = runningPolecats.has(hook.agent) ||
-          runningPolecats.has(hook.agent?.replace(/\//, '/polecats/'));
-        polecats.push({
-          name: hook.agent,
+      for (const agent of normalizeRigAgents(rig)) {
+        const address = agent.address || `${rig.name}/${agent.name}`;
+        const normalizedAddress = String(address).replace(/\/$/, '');
+        const legacyPolecatPath = normalizedAddress.replace(/\//, '/polecats/');
+        const isRunning = runningAddresses.has(normalizedAddress) ||
+          runningAddresses.has(legacyPolecatPath) ||
+          Boolean(agent.running);
+        const enhanced = {
+          ...agent,
+          id: address,
+          address,
           rig: rig.name,
-          role: hook.role,
           running: isRunning,
-          has_work: hook.has_work,
-          hook_bead: hook.hook_bead
-        });
+        };
+        rigAgents.push(enhanced);
+        if (String(agent.role || '').toLowerCase() === 'polecat') {
+          polecats.push(enhanced);
+        }
       }
     }
 
-    const response = { agents, polecats, runningPolecats: Array.from(runningPolecats) };
+    const response = {
+      agents,
+      rigAgents,
+      polecats,
+      runningPolecats: Array.from(runningAddresses),
+    };
     setCache('agents', response, CACHE_TTL.agents);
     res.json(response);
   } else {
@@ -812,7 +991,7 @@ app.get('/api/agents', async (req, res) => {
 // Get Mayor output (tmux buffer)
 app.get('/api/mayor/output', async (req, res) => {
   const lines = parseInt(req.query.lines) || 100;
-  const sessionName = 'gt-mayor';
+  const sessionName = mayorSessionName();
 
   try {
     const output = await getPolecatOutput(sessionName, lines);
@@ -839,7 +1018,8 @@ app.get('/api/polecat/:rig/:name/output', async (req, res) => {
   const agent = requireAgentPath(req, res);
   if (!agent) return;
   const lines = parseInt(req.query.lines) || 50;
-  const sessionName = agent.toSessionName();
+  const registry = await getSessionRegistry();
+  const sessionName = agent.toSessionName(registry.prefixForRig(agent.rig.value));
 
   const output = await getPolecatOutput(sessionName, lines);
   if (output !== null) {
@@ -855,7 +1035,8 @@ app.get('/api/polecat/:rig/:name/transcript', async (req, res) => {
   if (!agent) return;
   const rig = agent.rig.value;
   const name = agent.name.value;
-  const sessionName = agent.toSessionName();
+  const registry = await getSessionRegistry();
+  const sessionName = agent.toSessionName(registry.prefixForRig(rig));
 
   try {
     // First try to get tmux output (full history)
@@ -924,11 +1105,10 @@ app.post('/api/polecat/:rig/:name/start', async (req, res) => {
   console.log(`[Agent] Starting ${agentPath}...`);
 
   try {
-    // Use gt sling to start the agent on the target rig
-    const result = await executeGT(['sling', '--rig', rig, '--agent', name], { timeout: 30000 });
+    const result = await cliCompatibilityService.startPolecat({ rig, name });
 
     if (result.success) {
-      broadcast({ type: 'agent_started', data: { rig, name, agentPath } });
+      emitMutationEvent('agent_started', { rig, name, agentPath });
       res.json({ success: true, message: `Started ${agentPath}`, raw: result.data });
     } else {
       res.status(500).json({ success: false, error: result.error });
@@ -945,14 +1125,15 @@ app.post('/api/polecat/:rig/:name/stop', async (req, res) => {
   if (!agent) return;
   const rig = agent.rig.value;
   const name = agent.name.value;
-  const sessionName = agent.toSessionName();
+  const registry = await getSessionRegistry();
+  const sessionName = agent.toSessionName(registry.prefixForRig(rig));
 
   console.log(`[Agent] Stopping ${rig}/${name}...`);
 
   try {
     // Kill the tmux session
     await execFileAsync('tmux', ['kill-session', '-t', sessionName]);
-    broadcast({ type: 'agent_stopped', data: { rig, name, session: sessionName } });
+    emitMutationEvent('agent_stopped', { rig, name, session: sessionName });
     res.json({ success: true, message: `Stopped ${rig}/${name}` });
   } catch (err) {
     // Session might not exist, which is fine
@@ -973,26 +1154,16 @@ app.post('/api/polecat/:rig/:name/restart', async (req, res) => {
   const rig = agent.rig.value;
   const name = agent.name.value;
   const agentPath = agent.toString();
-  const sessionName = agent.toSessionName();
+  const registry = await getSessionRegistry();
+  const sessionName = agent.toSessionName(registry.prefixForRig(rig));
 
   console.log(`[Agent] Restarting ${agentPath}...`);
 
   try {
-    // First try to kill existing session (ignore errors)
-    try {
-      await execFileAsync('tmux', ['kill-session', '-t', sessionName]);
-    } catch {
-      // Ignore - session might not exist
-    }
-
-    // Wait a moment for cleanup
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Start the agent via gt sling
-    const result = await executeGT(['sling', '--rig', rig, '--agent', name], { timeout: 30000 });
+    const result = await cliCompatibilityService.restartPolecat({ rig, name, sessionName });
 
     if (result.success) {
-      broadcast({ type: 'agent_restarted', data: { rig, name, agentPath } });
+      emitMutationEvent('agent_restarted', { rig, name, agentPath });
       res.json({ success: true, message: `Restarted ${agentPath}`, raw: result.data });
     } else {
       res.status(500).json({ success: false, error: result.error });
@@ -1035,7 +1206,7 @@ app.get('/api/setup/status', async (req, res) => {
 
   // Check gt
   try {
-    const gtResult = await execFileAsync('gt', ['version'], { timeout: 5000 });
+    const gtResult = await execFileAsync(GT_EXECUTABLE, ['version'], { timeout: 5000 });
     status.gt_installed = true;
     status.gt_version = String(gtResult.stdout || '').trim().split('\n')[0];
   } catch {
@@ -1044,7 +1215,7 @@ app.get('/api/setup/status', async (req, res) => {
 
   // Check bd
   try {
-    const bdResult = await execFileAsync('bd', ['version'], { timeout: 5000 });
+    const bdResult = await execFileAsync(BD_EXECUTABLE, ['version'], { timeout: 5000 });
     status.bd_installed = true;
     status.bd_version = String(bdResult.stdout || '').trim().split('\n')[0];
   } catch {
@@ -1060,20 +1231,35 @@ app.get('/api/setup/status', async (req, res) => {
     status.workspace_initialized = false;
   }
 
-  // Get rigs
+  // Get rigs — prefer --json output, fall back to text parsing
   try {
-    const rigResult = await executeGT(['rig', 'list']);
+    const rigResult = await executeGT(['rig', 'list', '--json']);
     if (rigResult.success) {
-      // Parse text output
-      const rigs = [];
-      const lines = rigResult.data.split('\n');
-      for (const line of lines) {
-        const match = line.match(/^  ([a-zA-Z0-9_-]+)$/);
-        if (match) {
-          rigs.push({ name: match[1] });
+      try {
+        const parsed = JSON.parse(rigResult.data || '[]');
+        status.rigs = Array.isArray(parsed)
+          ? parsed
+              .filter(rig => rig && rig.name)
+              .map(rig => ({ name: rig.name, ...rig }))
+          : [];
+      } catch {
+        const rigs = [];
+        const lines = String(rigResult.data || '').split('\n');
+        for (const line of lines) {
+          const match = line.match(/^\s*([a-zA-Z0-9_-]+)\s*$/);
+          if (match) {
+            rigs.push({ name: match[1] });
+          }
         }
+        status.rigs = rigs;
       }
-      status.rigs = rigs;
+    } else {
+      const textResult = await executeGT(['rig', 'list']);
+      if (textResult.success) {
+        status.rigs = parseRigNames(textResult.data);
+      } else {
+        status.rigs = [];
+      }
     }
   } catch {
     status.rigs = [];
@@ -1106,17 +1292,12 @@ app.post('/api/rigs', async (req, res) => {
   const hasError = result.data && (result.data.includes('Error:') || result.data.includes('error:'));
 
   if (result.success && !hasError) {
+    clearSessionRegistryCache(GT_ROOT);
+
     // Create agent beads for witness and refinery (targeted, not gt doctor --fix)
     const agentRoles = ['witness', 'refinery'];
     for (const role of agentRoles) {
-      const beadResult = await executeBD([
-        'create',
-        `Setup ${role} for ${name}`,  // Title is required
-        '--type', 'agent',
-        '--agent-rig', name,
-        '--role-type', role,
-        '--silent'
-      ]);
+      const beadResult = await cliCompatibilityService.createAgentBeadForRig({ rigName: name, role });
       if (!beadResult.success) {
         console.warn(`[BD] Failed to create ${role} bead for ${name}:`, beadResult.error);
       } else {
@@ -1124,7 +1305,7 @@ app.post('/api/rigs', async (req, res) => {
       }
     }
 
-    broadcast({ type: 'rig_added', data: { name, url } });
+    emitMutationEvent('rig_added', { name, url });
     res.json({ success: true, name, raw: result.data });
   } else {
     const errorMsg = hasError ? result.data : (result.error || 'Failed to add rig');
@@ -1132,7 +1313,7 @@ app.post('/api/rigs', async (req, res) => {
   }
 });
 
-// List rigs
+// List rigs — prefer --json output, fall back to text parsing
 app.get('/api/rigs', async (req, res) => {
   // Check cache
   if (req.query.refresh !== 'true') {
@@ -1140,19 +1321,24 @@ app.get('/api/rigs', async (req, res) => {
     if (cached) return res.json(cached);
   }
 
-  const result = await executeGT(['rig', 'list']);
+  const result = await executeGT(['rig', 'list', '--json']);
 
   if (result.success) {
-    // Parse text output: "  rigname\n    Polecats: 0..."
-    const rigs = [];
-    const lines = result.data.split('\n');
-    for (const line of lines) {
-      // Rig names are indented with 2 spaces, not 4
-      const match = line.match(/^  ([a-zA-Z0-9_-]+)$/);
-      if (match) {
-        rigs.push({ name: match[1] });
-      }
+    try {
+      const parsed = JSON.parse(result.data);
+      const rigs = parsed.map(r => ({ name: r.name }));
+      setCache('rigs', rigs, CACHE_TTL.rigs);
+      res.json(rigs);
+      return;
+    } catch {
+      // JSON parse failed — fall through to text parsing
     }
+  }
+
+  // Fallback: text parsing
+  const textResult = await executeGT(['rig', 'list']);
+  if (textResult.success) {
+    const rigs = parseRigNames(textResult.data);
     setCache('rigs', rigs, CACHE_TTL.rigs);
     res.json(rigs);
   } else {
@@ -1171,7 +1357,8 @@ app.delete('/api/rigs/:name', async (req, res) => {
   const result = await executeGT(['rig', 'remove', name]);
 
   if (result.success) {
-    broadcast({ type: 'rig_removed', data: { name } });
+    clearSessionRegistryCache(GT_ROOT);
+    emitMutationEvent('rig_removed', { name });
     res.json({ success: true, name, raw: result.data });
   } else {
     res.status(500).json({ success: false, error: result.error });
@@ -1247,7 +1434,7 @@ app.post('/api/crews', async (req, res) => {
   const result = await executeGT(args);
 
   if (result.success) {
-    broadcast({ type: 'crew_added', data: { name, rig } });
+    emitMutationEvent('crew_added', { name, rig });
     res.status(201).json({ success: true, name, rig, raw: result.data });
   } else {
     res.status(500).json({ success: false, error: result.error });
@@ -1265,7 +1452,7 @@ app.delete('/api/crew/:name', async (req, res) => {
   const result = await executeGT(['crew', 'remove', name]);
 
   if (result.success) {
-    broadcast({ type: 'crew_removed', data: { name } });
+    emitMutationEvent('crew_removed', { name });
     res.json({ success: true, name, raw: result.data });
   } else {
     res.status(500).json({ success: false, error: result.error });
@@ -1408,7 +1595,7 @@ app.post('/api/service/:name/up', async (req, res) => {
     const result = await executeGT(args, { timeout: 30000 });
 
     if (result.success) {
-      broadcast({ type: 'service_started', data: { service: name } });
+      emitMutationEvent('service_started', { service: name });
       res.json({ success: true, service: name, message: `${name} started`, raw: result.data });
     } else {
       res.status(500).json({ success: false, error: result.error });
@@ -1437,19 +1624,21 @@ app.post('/api/service/:name/down', async (req, res) => {
   console.log(`[Service] Stopping ${name}...`);
 
   try {
+    const registry = await getSessionRegistry();
     const args = [name, 'stop'];
     if (rig) args.push(rig);
     const result = await executeGT(args, { timeout: 10000 });
 
     if (result.success) {
-      broadcast({ type: 'service_stopped', data: { service: name } });
+      emitMutationEvent('service_stopped', { service: name });
       res.json({ success: true, service: name, message: `${name} stopped`, raw: result.data });
     } else {
       // Try killing tmux session directly
-      const sessionName = `gt-${name}`;
+      const sessionName = sessionNameForService({ name, rig, registry });
       try {
+        if (!sessionName) throw new Error('No direct tmux session fallback available');
         await execFileAsync('tmux', ['kill-session', '-t', sessionName]);
-        broadcast({ type: 'service_stopped', data: { service: name } });
+        emitMutationEvent('service_stopped', { service: name });
         res.json({ success: true, service: name, message: `${name} stopped via tmux` });
       } catch {
         res.status(500).json({ success: false, error: result.error });
@@ -1497,7 +1686,7 @@ app.post('/api/service/:name/restart', async (req, res) => {
     const result = await executeGT(startArgs, { timeout: 30000 });
 
     if (result.success) {
-      broadcast({ type: 'service_restarted', data: { service: name } });
+      emitMutationEvent('service_restarted', { service: name });
       res.json({ success: true, service: name, message: `${name} restarted`, raw: result.data });
     } else {
       res.status(500).json({ success: false, error: result.error });
@@ -1511,21 +1700,30 @@ app.post('/api/service/:name/restart', async (req, res) => {
 // Get service status
 app.get('/api/service/:name/status', async (req, res) => {
   const { name } = req.params;
+  const rig = req.query.rig;
 
   try {
-    const runningPolecats = await getRunningPolecats();
-    const sessionName = `gt-${name}`;
+    const registry = await getSessionRegistry();
+    const sessionName = sessionNameForService({ name, rig, registry });
 
-    // Check if service has a tmux session
     let running = false;
-    try {
-      const { stdout } = await execFileAsync('tmux', ['ls']);
-      running = String(stdout || '').includes(sessionName);
-    } catch {
-      running = false;
+    let resolvedSession = sessionName;
+    const { stdout } = await execFileAsync('tmux', ['ls']);
+
+    if (sessionName) {
+      running = await isSessionRunning(sessionName);
+    } else {
+      const identities = parseTmuxSessions(stdout, registry);
+      const match = identities.find((identity) => {
+        if (identity.role !== String(name || '').toLowerCase()) return false;
+        if (!rig) return true;
+        return identity.rig === rig;
+      });
+      running = !!match;
+      resolvedSession = match?.session || null;
     }
 
-    res.json({ service: name, running, session: running ? sessionName : null });
+    res.json({ service: name, running, session: running ? resolvedSession : null });
   } catch (err) {
     res.json({ service: name, running: false, error: err.message });
   }
@@ -1543,7 +1741,7 @@ const formulaService = new FormulaService({
   gtGateway,
   bdGateway,
   cache: formulaCache,
-  emit: (type, data) => broadcast({ type, data }),
+  emit: (type, data) => emitMutationEvent(type, data),
 });
 
 registerFormulaRoutes(app, { formulaService });
@@ -1555,6 +1753,18 @@ registerGitHubRoutes(app, { gitHubService });
 
 // Start activity stream
 let activityProcess = null;
+let activityRestartTimer = null;
+
+function scheduleActivityRestart() {
+  if (clients.size === 0) return;
+  if (activityRestartTimer) return;
+  activityRestartTimer = setTimeout(() => {
+    activityRestartTimer = null;
+    if (clients.size > 0) {
+      startActivityStream();
+    }
+  }, 5000);
+}
 
 function startActivityStream() {
   if (activityProcess) return;
@@ -1562,7 +1772,7 @@ function startActivityStream() {
   console.log('[WS] Starting activity stream...');
 
   // Use gt feed for comprehensive activity (beads + gt events + convoys)
-  activityProcess = spawn('gt', ['feed', '--plain', '--follow'], {
+  activityProcess = spawn(GT_EXECUTABLE, ['feed', '--plain', '--follow'], {
     cwd: GT_ROOT
   });
 
@@ -1580,13 +1790,16 @@ function startActivityStream() {
     console.error(`[BD Activity] stderr: ${data}`);
   });
 
+  activityProcess.on('error', (error) => {
+    console.error(`[BD Activity] Process error: ${error.message}`);
+    activityProcess = null;
+    scheduleActivityRestart();
+  });
+
   activityProcess.on('close', (code) => {
     console.log(`[BD Activity] Process exited with code ${code}`);
     activityProcess = null;
-    // Restart after delay if clients connected
-    if (clients.size > 0) {
-      setTimeout(startActivityStream, 5000);
-    }
+    scheduleActivityRestart();
   });
 }
 
@@ -1658,9 +1871,15 @@ wss.on('connection', (ws) => {
     clients.delete(ws);
 
     // Stop activity stream if no clients
-    if (clients.size === 0 && activityProcess) {
-      activityProcess.kill();
-      activityProcess = null;
+    if (clients.size === 0) {
+      if (activityRestartTimer) {
+        clearTimeout(activityRestartTimer);
+        activityRestartTimer = null;
+      }
+      if (activityProcess) {
+        activityProcess.kill();
+        activityProcess = null;
+      }
     }
   });
 

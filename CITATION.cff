@@ -11,11 +11,11 @@ authors:
 repository-code: "https://github.com/getHarshOnline/gastown-gui"
 url: "https://rawthoughts.in/JARVIS/gastown-gui"
 abstract: >-
-  getHarshOnline fork of Gastown GUI web dashboard. Real-time WebSocket
-  monitoring, service control, agent state visualization. Layer 3 dashboard
-  in the JARVIS agent OS.
+  getHarshOnline integration fork of the Gas Town GUI companion. The gho
+  branch preserves reviewed upstream lineage and bounded owner-selected
+  additions; availability is not a JARVIS admission or deployment claim.
 keywords:
   - dashboard
   - multi-agent
   - real-time-monitoring
-license: AGPL-3.0-or-later
+license: MIT AND AGPL-3.0-or-later

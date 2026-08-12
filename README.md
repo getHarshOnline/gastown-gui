@@ -1,14 +1,18 @@
-> **[getHarshOnline/gastown-gui](https://github.com/getHarshOnline/gastown-gui)** — fork of [web3dev1337/gastown-gui](https://github.com/web3dev1337/gastown-gui) maintained on the **`gho`** branch. Web dashboard for [getHarshOnline/gastown](https://github.com/getHarshOnline/gastown) with real-time agent monitoring, service control, and work visualization.
+> **[getHarshOnline/gastown-gui](https://github.com/getHarshOnline/gastown-gui)** — fork of [web3dev1337/gastown-gui](https://github.com/web3dev1337/gastown-gui) maintained on the **`gho`** branch with reviewed upstream merges. This branch preserves fork identity and owner-selected additions; its availability does not by itself establish JARVIS admission, plugin selection, deployment, or activation.
 
 # Gas Town GUI
 
-A standalone web GUI for [Gas Town](https://github.com/getHarshOnline/gastown) - the multi-agent orchestration system for Claude Code.
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/web3dev1337)
+
+A standalone web GUI for [the getHarshOnline Gas Town fork](https://github.com/getHarshOnline/gastown), synchronized from the canonical [Gas Town upstream](https://github.com/gastownhall/gastown) - the multi-agent orchestration system for Claude Code.
 
 ![Gas Town GUI Screenshot](assets/screenshot.png)
 
 ![Gas Town Loading Screen](assets/loading-background.jpeg)
 
 > **Note:** This is an independent companion project, not part of the official Gas Town repository. Originally submitted as [PR #212](https://github.com/steveyegge/gastown/pull/212), now maintained as a standalone package per Steve's recommendation.
+
+Support ongoing development: **[github.com/sponsors/web3dev1337](https://github.com/sponsors/web3dev1337)**
 
 > *"Thank you for the impressive work on this GUI! The effort and thought that went into it is clear - the architecture is clean, the documentation is thorough, and it demonstrates a solid understanding of Gas Town's workflow. [...] If you're interested in continuing this work, I'd encourage publishing it as a standalone companion project."*
 >
@@ -57,6 +61,68 @@ Opens `http://localhost:7667` in your browser.
 ```bash
 gastown-gui doctor
 ```
+
+---
+
+## Nix / NixOS
+
+### Build with Nix flake
+
+```bash
+nix build .#gastown-gui
+./result/bin/gastown-gui start
+```
+
+### Run as a NixOS service
+
+Import the module from this repository's flake and enable it:
+
+```nix
+{
+  inputs.gastown-gui.url = "github:web3dev1337/gastown-gui";
+
+  outputs = { self, nixpkgs, gastown-gui, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        gastown-gui.nixosModules.deployment
+        ({
+          services.gastown-gui = {
+            enable = true;
+            host = "127.0.0.1";
+            port = 7667;
+            openFirewall = false; # keep false when reverse-proxying locally
+
+            # Optional: add runtime tools to PATH for service subprocesses
+            # gtPackage = pkgs.gastown-gt;
+            # beadsPackage = pkgs.beads;
+
+            # Defaults: create and run as system user/group "gastown"
+            # user = "gastown";
+            # group = "gastown";
+            # createUser = true;
+            # createGroup = true;
+
+            # Optional: where your Gas Town rigs live
+            # gtRoot = "/var/lib/gastown/gt";
+
+            # Optional: extra env vars
+            # environment = { CORS_ORIGINS = "http://localhost:3000"; };
+          };
+        })
+      ];
+    };
+  };
+}
+```
+
+Then rebuild your system:
+
+```bash
+sudo nixos-rebuild switch --flake .#my-host
+```
+
+Service hardening defaults are enabled in the module (for example `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem`).
 
 ---
 
@@ -113,6 +179,8 @@ gastown-gui help
 | `GASTOWN_PORT` | Server port | 7667 |
 | `HOST` | Server host | 127.0.0.1 |
 | `GT_ROOT` | Gas Town root directory | ~/gt |
+| `GT_BIN` | Override `gt` executable path | auto-detect (`PATH`, `/opt/homebrew/bin/gt`, `/usr/local/bin/gt`) |
+| `BD_BIN` | Override `bd` executable path | auto-detect (`PATH`, `/opt/homebrew/bin/bd`, `/usr/local/bin/bd`) |
 
 ---
 
@@ -300,6 +368,7 @@ Thanks to these community members who contributed to the original PR through tes
 - [@olivierlefloch](https://github.com/olivierlefloch)
 - [@zalo](https://github.com/zalo)
 - [@irelandpaul](https://github.com/irelandpaul)
+- [@yougotborked](https://github.com/yougotborked) (PR #27 foundation work)
 
 ---
 

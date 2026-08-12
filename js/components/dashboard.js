@@ -9,6 +9,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { showToast } from './toast.js';
 import { AGENT_TYPES, STATUS_COLORS, getAgentConfig } from '../shared/agent-types.js';
+import { isUserVisibleWorkBead } from '../shared/beads.js';
 import { BEAD_DETAIL, STATUS_UPDATED } from '../shared/events.js';
 import { escapeHtml } from '../utils/html.js';
 import { formatTimeAgoCompact } from '../utils/formatting.js';
@@ -115,19 +116,26 @@ export function initDashboard() {
 /**
  * Load and render dashboard
  */
-export async function loadDashboard() {
+export async function loadDashboard({ forceRefresh = false } = {}) {
   if (!container) return;
 
   // Show loading skeleton
   container.innerHTML = renderLoadingSkeleton();
 
   try {
-    // Only load status - doctor is too slow for dashboard (15-20s)
-    // User can click through to Health page for full diagnostics
-    const statusResult = await api.getStatus().catch(() => null);
+    const [statusResult, convoyResult, workResult, mailResult] = await Promise.allSettled([
+      api.getStatus(forceRefresh),
+      api.getConvoys(forceRefresh ? { all: 'true', refresh: 'true' } : { all: 'true' }),
+      api.get('/api/beads'),
+      api.get(`/api/mail/all?limit=200${forceRefresh ? '&refresh=true' : ''}`),
+    ]);
 
-    const status = statusResult || state.get('status') || {};
-    // Derive basic health from status data (fast, no doctor call)
+    const status = statusResult.status === 'fulfilled' ? statusResult.value : (state.get('status') || {});
+    if (statusResult.status === 'fulfilled') state.setStatus(statusResult.value);
+    if (convoyResult.status === 'fulfilled') state.setConvoys(convoyResult.value || []);
+    if (workResult.status === 'fulfilled') state.setWork(workResult.value || []);
+    if (mailResult.status === 'fulfilled') state.setMail(mailResult.value?.items || mailResult.value || []);
+
     const health = deriveHealthFromStatus(status);
 
     renderDashboard(status, health);
@@ -179,28 +187,28 @@ function renderDashboard(status, health) {
   const rigs = status.rigs || [];
   const convoys = state.get('convoys') || [];
   const work = state.get('work') || [];
-  const agents = state.get('agents') || [];
+  const agents = [
+    ...(status.agents || []),
+    ...rigs.flatMap(rig => rig.agents || rig.hooks || []),
+  ];
   const mail = state.get('mail') || [];
 
-  // Calculate metrics
   const metrics = calculateMetrics(rigs, convoys, work, agents, mail);
   const healthStatus = calculateHealthStatus(health);
+  const isEmpty = rigs.length === 0 && convoys.length === 0 && work.length === 0;
 
   container.innerHTML = `
-    <!-- Health Banner -->
+    ${isEmpty ? renderGettingStarted() : ''}
     ${renderHealthBanner(healthStatus)}
 
-    <!-- Metrics Grid -->
     <div class="dashboard-metrics">
       ${renderMetricCard('local_shipping', 'Active Convoys', metrics.activeConvoys, metrics.totalConvoys, 'convoys', '#3b82f6')}
       ${renderMetricCard('task_alt', 'Open Work', metrics.openWork, metrics.totalWork, 'work', '#22c55e')}
       ${renderAgentMetricCard(metrics)}
-      ${renderMetricCard('mail', 'Unread Mail', metrics.unreadMail, metrics.totalMail, 'mail', '#f59e0b')}
+      ${renderMetricCard('mail', 'Mail Events', metrics.totalMail, null, 'mail', '#f59e0b')}
     </div>
 
-    <!-- Main Content Grid -->
     <div class="dashboard-grid">
-      <!-- Quick Actions -->
       <div class="dashboard-card quick-actions">
         <div class="card-header">
           <span class="material-icons">bolt</span>
@@ -211,7 +219,6 @@ function renderDashboard(status, health) {
         </div>
       </div>
 
-      <!-- Agent Status -->
       <div class="dashboard-card agent-overview">
         <div class="card-header">
           <span class="material-icons">monitoring</span>
@@ -222,7 +229,6 @@ function renderDashboard(status, health) {
         </div>
       </div>
 
-      <!-- Recent Work -->
       <div class="dashboard-card recent-work">
         <div class="card-header">
           <span class="material-icons">history</span>
@@ -233,7 +239,6 @@ function renderDashboard(status, health) {
         </div>
       </div>
 
-      <!-- Rig Overview -->
       <div class="dashboard-card rig-overview">
         <div class="card-header">
           <span class="material-icons">folder_special</span>
@@ -246,29 +251,71 @@ function renderDashboard(status, health) {
     </div>
   `;
 
-  // Add event listeners for quick actions
   setupQuickActionHandlers();
+}
+
+function renderGettingStarted() {
+  return `
+    <div class="getting-started-banner">
+      <div class="getting-started-content">
+        <div class="getting-started-icon">
+          <span class="material-icons">rocket_launch</span>
+        </div>
+        <div class="getting-started-text">
+          <h2>Welcome to Gas Town!</h2>
+          <p>Get started by connecting your first project (rig) and creating work for your AI agents.</p>
+        </div>
+        <div class="getting-started-actions">
+          <button class="btn btn-primary btn-lg" data-modal-open="new-rig">
+            <span class="material-icons">add</span>
+            Add Your First Rig
+          </button>
+          <button class="btn btn-secondary" onclick="window.gastown?.startOnboarding?.()">
+            <span class="material-icons">school</span>
+            Show Setup Guide
+          </button>
+        </div>
+      </div>
+      <div class="getting-started-steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <div class="step-text">Connect a repository</div>
+        </div>
+        <div class="step-arrow"><span class="material-icons">arrow_forward</span></div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <div class="step-text">Create a work item</div>
+        </div>
+        <div class="step-arrow"><span class="material-icons">arrow_forward</span></div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <div class="step-text">Assign to an agent</div>
+        </div>
+        <div class="step-arrow"><span class="material-icons">arrow_forward</span></div>
+        <div class="step">
+          <div class="step-number">4</div>
+          <div class="step-text">Watch it work!</div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 /**
  * Calculate dashboard metrics
  */
 function calculateMetrics(rigs, convoys, work, agents, mail) {
-  const activeConvoys = convoys.filter(c => c.status !== 'completed' && c.status !== 'closed').length;
-  const openWork = work.filter(w => w.status !== 'closed' && w.status !== 'done').length;
-  const unreadMail = mail.filter(m => !m.read).length;
-
-  // Collect all agents from rigs and get stats
-  const allAgents = rigs.flatMap(rig => rig.agents || []);
-  const agentStats = getAgentStats(allAgents);
+  const visibleWork = (work || []).filter(isUserVisibleWorkBead);
+  const activeConvoys = convoys.filter(c => !['completed', 'complete', 'closed'].includes(String(c.status || '').toLowerCase())).length;
+  const openWork = visibleWork.filter(w => !['closed', 'done', 'complete', 'completed'].includes(String(w.status || '').toLowerCase())).length;
+  const agentStats = getAgentStats(agents);
 
   return {
     activeConvoys,
     totalConvoys: convoys.length,
     openWork,
-    totalWork: work.length,
+    totalWork: visibleWork.length,
     ...agentStats,  // working, available, stopped, total, statusText
-    unreadMail,
     totalMail: mail.length,
   };
 }
@@ -412,13 +459,16 @@ function renderAgentStatus(rigs, agents) {
   const agentsByType = {};
   agentTypes.forEach(type => { agentsByType[type] = []; });
 
-  rigs.forEach(rig => {
-    (rig.agents || []).forEach(agent => {
-      const type = (agent.role || 'polecat').toLowerCase();
-      if (agentsByType[type]) {
-        agentsByType[type].push(agent);
-      }
-    });
+  agents.forEach(agent => {
+    const apiRole = String(agent.role || '').toLowerCase();
+    const type = apiRole === 'coordinator'
+      ? 'mayor'
+      : apiRole === 'health-check'
+        ? 'deacon'
+        : (apiRole || 'polecat');
+    if (agentsByType[type]) {
+      agentsByType[type].push(agent);
+    }
   });
 
   return `
@@ -470,7 +520,9 @@ function renderAgentStatus(rigs, agents) {
  * Render recent work
  */
 function renderRecentWork(work) {
-  if (!work || work.length === 0) {
+  const visibleWork = (work || []).filter(isUserVisibleWorkBead);
+
+  if (visibleWork.length === 0) {
     return `
       <div class="empty-state small">
         <span class="material-icons">inbox</span>
@@ -480,7 +532,7 @@ function renderRecentWork(work) {
   }
 
   // Show last 5 items sorted by date
-  const recent = [...work]
+  const recent = [...visibleWork]
     .sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))
     .slice(0, 5);
 
